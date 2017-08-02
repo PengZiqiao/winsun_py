@@ -1,8 +1,10 @@
-﻿from selenium import webdriver
+from selenium import webdriver
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.support.ui import Select, WebDriverWait
 import pandas as pd
-from winsun.date import Week
+from winsun.date import Week, Month
+from bs4 import BeautifulSoup
+from time import sleep
 
 """常量"""
 ZHU_ZHAI = ['住宅']
@@ -82,6 +84,7 @@ class GisSpider:
             print('>>> 查询成功')
         except TimeoutException:
             print('>>> 超时')
+        sleep(3)
         return self.driver.page_source
 
     def rank(self, by, plate, usg):
@@ -106,6 +109,7 @@ class GisSpider:
             print('>>> 查询成功')
         except TimeoutException:
             print('>>> 超时')
+        sleep(3)
         rank_df = pd.read_html(self.driver.page_source, index_col=0, header=0)
         return rank_df
 
@@ -177,6 +181,15 @@ class GisSpider:
                 'week_start': f'2017{w.N - period + 1}'
             }
 
+        if by == 'month':
+            m = Month()
+            m = m.N - period + 1
+            if m < 10:
+                m = f'0{m}'
+            start = {
+                'month_start': f'2017-{m}-01'
+            }
+
         item = ['上市面积', '销售面积', '销售均价']
         if rengou:
             item.append('认购面积')
@@ -186,6 +199,161 @@ class GisSpider:
         df = df_reshape(df, -1, list(range(period)), item)
         return df_gxj(df)
 
+
+class NeiSpider:
+    def __init__(self, username, password):
+        """初始化并登陆
+        """
+        self.url= 'http://192.168.108.16/realty/admin/'
+        self.driver = webdriver.Chrome()
+        self.wait = WebDriverWait(self.driver, 60)
+        
+        # 登陆
+        try:
+            self.driver.get(f'{self.url}main.php')
+            self.driver.find_element_by_name('username').send_keys(username)
+            self.driver.find_element_by_name('password').send_keys(password)
+            self.driver.find_element_by_name('submit').click()
+            self.wait.until(lambda driver: driver.title == '研究部数据管理系统')
+            print('>>> 登陆成功')
+        except TimeoutException:
+            print('>>> 登陆失败')
+            
+    def gongxiao(self, by, **kwargs):
+        """供销查询
+        :param
+            by: 'week', 'month', 'year'
+            start, end: 2017年第1周 => '201701'; 2017年1月 => '2017-01-00'
+            block: 板块 default:'全市'
+            stat: 输出方式
+            usg: 物业类型
+            item：输出项
+            add: 累计 => '0'; 逐周 => '1'
+        """
+        self.driver.get(f'{self.url}ol_new_block_{by}.php')
+        self.wait.until(lambda driver: driver.find_element_by_name('block'))
+
+        # 设置开始、结束时间
+        kwargs[f'{by}1'], kwargs[f'{by}2'] = kwargs['start'], kwargs['end']
+
+        # 下拉列表的选项们
+        for key in [f'{by}1', f'{by}2', 'block', 'stat', 'add']:
+            if key in kwargs:
+                self.select(key, kwargs[key])
+
+        # 物业类型
+        if 'usg' in kwargs:
+            self.multiselect('usage[]', kwargs['usg'])
+
+        # 输出项
+        if 'item' in kwargs:
+            if by == 'month':
+                self.multiselect('Litem1[]', kwargs['item'])
+            else:
+                self.multiselect('Litem2[]', kwargs['item'])
+
+        # 查询
+        self.submit()
+        try:
+            self.wait.until(lambda driver: driver.find_element_by_tag_name('caption'))
+            print('>>> 查询成功')
+        except TimeoutException:
+            print('>>> 超时')
+            
+        bs = BeautifulSoup(self.driver.page_source, 'lxml')
+        table = bs.table.find('table').prettify()
+        df = pd.read_html(table, index_col=0, header=1)[0]
+        return df
+
+
+    def select(self, name, value):
+        """下拉列表
+        :param
+            name:表单控件的name
+            value:表单的 value 或visible_text
+        """
+        s = Select(self.driver.find_element_by_name(name))
+        try:
+            s.select_by_visible_text(value)
+        except NoSuchElementException:
+            s.select_by_value(value)
+
+    def multiselect(self, name, value_list):
+        """多选
+        :param
+            name:表单控件的name
+            value_list:表单的 value 或visible_text 组成的列表
+        """
+        s = Select(self.driver.find_element_by_name(name))
+        s.deselect_all()
+        for value in value_list:
+            try:
+                s.select_by_visible_text(value)
+            except NoSuchElementException:
+                s.select_by_value(value)
+                
+    def sendkeys(self, name, value):
+        self.driver.find_element_by_name(name).clear()
+        self.driver.find_element_by_name(name).send_keys(value)
+
+    def sum_gxj(self, by, start, end, usg, block, rengou=False):
+        """返回一个时间段内，以各板块为行，以“供、销、价”为列的表格，含“合计”
+        :param 
+            by: year, month, week
+            start, end：时间
+            usg: 物业类型
+            block: 板块
+            rengou: 是否包含认购面积
+        :return: df
+        """
+
+        item = ['上市面积', '已售面积', '已售均价']
+        if rengou:
+            item.append('认购面积')
+
+        df = self.gongxiao(by=by, start=start, end=end, usg=usg, block=block, stat='按板块/片区', item=item, add='0')
+        df.columns = item
+        df = df.rename(index=lambda x: x.replace('仙西', '仙林'))
+        df = df_gxj(df)
+        return df
+
+    def trend_gxj(self, by, start, end, usg, block, rengou=False):
+        """返回一个按时间为行的，以“供、销、价”为列的表格
+        :param 
+            by: year, month, week
+            start, end：时间
+            usg: 物业类型
+            block: 板块
+            plate: 板块
+            rengou: 是否包含认购面积
+        :return: df
+        """
+        item = ['上市面积', '已售面积', '已售均价']
+        if rengou:
+            item.append('认购面积')
+
+        if by == 'year':
+            df = self.gongxiao(by=by, start=start, end=end, block=block, usg=usg, item=item, stat='按板块/片区')
+        else:
+            df = self.gongxiao(by=by, start=start, end=end, block=block, usg=usg, item=item, stat='按板块/片区', add='1')
+        
+        col_len = int(len(df.columns) / len(item) - 1)
+        
+        df = df_reshape(df, 0, list(range(col_len)), item)
+        return df_gxj(df)
+    
+    def suiji(self):
+        self.driver.get(f'{self.url}ol_filter_stat.php?check_flag=false')
+        self.wait.until(lambda driver: driver.find_element_by_name('ByProject'))
+        print('>>> 可以开始使用随机随机统计')
+        print('>>> 使用nei.select(name, value)控制下拉菜单和单选框')
+        print('>>> 使用nei.multiselect(name, value_list)控制多选框')
+        print('>>> 使用nei.sendkeys(name, value)控制输入框')
+        print('>>> 输入df = nei.submit()提交')
+        
+    def submit(self):
+        self.driver.find_element_by_name("Submit").click()
+        
 
 def df_reshape(df, row, index, columns):
     """
