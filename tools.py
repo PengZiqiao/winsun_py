@@ -162,6 +162,7 @@ class GisSpider:
         df = pd.read_html(r, index_col=0, header=0)[0]
         df = df.rename(index=lambda x: x.replace('仙西', '仙林'))
         df = df_gxj(df)
+        
         return df
 
     def trend_gxj(self, by, usg, plate, period, rengou=False):
@@ -197,6 +198,7 @@ class GisSpider:
         r = self.gongxiao(by=by, plate=plate, usg=usg, item=item, isSum='0', **start)
         df = pd.read_html(r, index_col=0, header=1)[0]
         df = df_reshape(df, -1, list(range(period)), item)
+        
         return df_gxj(df)
 
 
@@ -377,6 +379,6 @@ def df_gxj(df):
     for each in df.columns[:-1]:
             df[each].astype('float')
             df[each] = df[each] / 1e4
-    df[df.columns[-1]].astype('int')
     df = df.round(2)
+    df[df.columns[-1]] = df[df.columns[-1]].astype('int')
     return df
