@@ -1,3 +1,5 @@
+from numpy import isnan
+
 def gr(a,b, desc=True, degree=2):
     """growth rate
     a相对于b的增长率
@@ -22,7 +24,6 @@ def percent(value, degree=2):
     """
     将带正负号的比值(1代表100%)转成“增长/下降xx%”的形式
     """
-    from numpy import isnan
     if isnan(value):
         return '无环比'
     else:
